@@ -1,31 +1,31 @@
-use std::cell::RefCell;
-use std::char;
-use std::cmp::Ordering;
-use std::env::args;
-use std::fs::File;
-use std::io;
-use std::io::prelude::*;
-use std::path::Path;
-use std::process::exit;
-use std::collections::{BinaryHeap, BTreeMap, HashMap};
-use std::rc::Rc;
+use std::{
+    collections::{
+        BinaryHeap,
+        BTreeMap,
+        HashMap,
+    },
+    env,
+    fs::File,
+    io::prelude::*,
+    io::Result,
+};
 
 #[derive(Debug)]
 struct HuffNode {
-    weight: u32,
     character: Option<char>,
-    left: Option<Rc<RefCell<HuffNode>>>,
-    right: Option<Rc<RefCell<HuffNode>>>,
+    weight: u32,
+    left: Option<Box<HuffNode>>,
+    right: Option<Box<HuffNode>>,
 }
 
 impl Ord for HuffNode {
-    fn cmp(&self, other: &Self) -> Ordering {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         other.weight.cmp(&self.weight)
     }
 }
 
 impl PartialOrd for HuffNode {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
@@ -39,146 +39,131 @@ impl PartialEq for HuffNode {
 impl Eq for HuffNode {}
 
 impl HuffNode {
-    fn new_leaf(weight: u32, character: char) -> Rc<RefCell<Self>> {
-        Rc::new(RefCell::new(HuffNode {
-            weight,
+    fn new_leaf(character: char, weight: u32) -> Self {
+        Self {
             character: Some(character),
+            weight,
             left: None,
             right: None,
-        }))
+        }
     }
 
-    fn new_internal(weight: u32, left: Rc<RefCell<HuffNode>>, right: Rc<RefCell<HuffNode>>) -> Rc<RefCell<Self>> {
-        Rc::new(RefCell::new(HuffNode {
-            weight,
+    fn new_internal(weight: u32, left: HuffNode, right: HuffNode) -> Self {
+        Self {
             character: None,
-            left: Some(left),
-            right: Some(right)
-        }))
+            weight,
+            left: Some(Box::new(left)),
+            right: Some(Box::new(right)),
+        }
     }
 }
 
-fn build_min_heap(char_count: BTreeMap<char, u32>) -> BinaryHeap<Rc<RefCell<HuffNode>>> {
+fn build_huffman_tree(char_map: &mut BTreeMap<char, u32>) -> Option<Box<HuffNode>> {
     let mut heap = BinaryHeap::new();
-    for (char, weight) in &char_count {
-        heap.push(HuffNode::new_leaf(*weight, *char))
+
+    for (c, w) in char_map.iter() {
+        heap.push(HuffNode::new_leaf(*c, *w));
     }
 
-    heap
-}
-
-fn build_huffman_tree(heap: &mut BinaryHeap<Rc<RefCell<HuffNode>>>) -> Rc<RefCell<HuffNode>> {
     while heap.len() > 1 {
         let left = heap.pop().unwrap();
         let right = heap.pop().unwrap();
 
-        let combined_weight = left.borrow().weight + right.borrow().weight;
+        let combined_weight = left.weight + right.weight;
         let new_node = HuffNode::new_internal(combined_weight, left, right);
 
         heap.push(new_node);
     }
 
-    heap.pop().unwrap()
+    heap.pop().map(Box::new)
 }
 
-fn generate_codes(node: Rc<RefCell<HuffNode>>, prefix: String, codes: &mut HashMap<char, String>) {
-    let node_borrowed = node.borrow();
-
-    if let Some(character) = node_borrowed.character {
-        // Leaf Node
-        codes.insert(character, prefix);
+fn generate_codes(node: HuffNode, lookup_table: &mut HashMap<char, String>, code: String) {
+    if let Some(c) = node.character {
+        lookup_table.insert(c, code);
     } else {
-        // Internal Node
-        if let Some(ref left) = node_borrowed.left {
-            generate_codes(left.clone(), format!("{}0", prefix), codes);
+        if let Some(l) = node.left {
+            generate_codes(*l, lookup_table, code.clone() + "0");
         }
-        if let Some(ref right) = node_borrowed.right {
-            generate_codes(right.clone(), format!("{}1", prefix), codes);
+        if let Some(r) = node.right {
+            generate_codes(*r, lookup_table, code.clone() + "1");
         }
     }
 }
 
-fn get_huffman_codes(tree: Rc<RefCell<HuffNode>>) -> HashMap<char, String> {
-    let mut codes = HashMap::new();
-    generate_codes(tree, String::new(), &mut codes);
+fn encode(text: String, lookup: HashMap<char, String>) -> String {
+    let mut code = String::new();
 
-    codes
-}
-
-fn encode_text(text: &str, codes: &HashMap<char, String>) -> String {
-    let mut encoded = String::new();
     for c in text.chars() {
-        if let Some(code) = codes.get(&c) {
-            encoded.push_str(code);
+        if let Some(bits) = lookup.get(&c) {
+            code.push_str(bits);
         }
     }
 
-    encoded
+    code
 }
 
-fn string_to_bytes(binary_string: &str) -> Vec<u8> {
+fn string_to_bytes(binary_string: String) -> Vec<u8> {
     let mut bytes = Vec::new();
-    let mut current_byte = 0u8;
+    let mut current = 0u8;
     let mut bit_count = 0;
 
     for bit in binary_string.chars() {
         if bit == '1' {
-            current_byte |= 1 << (7 - bit_count);
+            current |= 1 << (7 - bit_count);
         }
 
         bit_count += 1;
 
         if bit_count == 8 {
-            bytes.push(current_byte);
-            current_byte = 0;
+            bytes.push(current);
+            current = 0;
             bit_count = 0;
         }
     }
 
     if bit_count > 0 {
-        bytes.push(current_byte);
+        bytes.push(current);
     }
 
     bytes
 }
 
-fn main() -> io::Result<()> {
-    let mut args = args();
+fn write_bytes_to_file(filename: &str, bytes: &[u8]) -> Result<()> {
+    let mut file = File::create(filename)?;
+    file.write_all(bytes)?;
+    Ok(())
+}
 
-    if args.len() != 2 {
-        eprintln!("Incorrect number of arguments");
-        exit(1);
-    }
+fn main() -> Result<()> {
+    let mut args = env::args();
 
-    let path_string = args.nth(1).expect("Could not find file");
-    let file_path = Path::new(&path_string);
-    let mut file = File::open(file_path).expect("Could not open file");
+    let filename = args.nth(1).unwrap();
+
+    let mut file = File::open(filename)?;
     let mut text = String::new();
 
     file.read_to_string(&mut text).unwrap();
 
-    let mut char_count = BTreeMap::<char, u32>::new();
+    let mut char_map = BTreeMap::<char, u32>::new();
 
     for line in text.lines() {
         for c in line.chars() {
-            *char_count.entry(c).or_insert(0) += 1;
+            *char_map.entry(c).or_insert(0) += 1;
         }
     }
 
-    let mut heap = build_min_heap(char_count);
-    let huffman_tree = build_huffman_tree(&mut heap);
+    let option_root = build_huffman_tree(&mut char_map);
+    let mut lookup_table = HashMap::<char, String>::new();
 
-    let codes = get_huffman_codes(huffman_tree);
-    let encoded_text = encode_text(&text, &codes);
+    if let Some(root) = option_root {
+        generate_codes(*root, &mut lookup_table, String::new());
+    }
 
-    println!("Huffman Codes: {:?}", codes);
-    println!("ENCODED: {}", encoded_text);
+    let encoded = encode(text, lookup_table);
 
-    let bin_data = string_to_bytes(&encoded_text);
-
-    let out_path = Path::new("out.cmpr");
-    let mut out_file = File::create(out_path).expect("Could not create file");
-    out_file.write_all(&bin_data).expect("Could not write file");
+    let bin_data = string_to_bytes(encoded);
+    write_bytes_to_file("out.cmpr", &bin_data)?;
 
     Ok(())
 }
