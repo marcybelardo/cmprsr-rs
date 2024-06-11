@@ -1,8 +1,5 @@
 use std::fs::{self, File};
-use std::io::{
-    Read,
-    Write
-};
+use std::io::{Read, Write};
 
 use anyhow::Result;
 
@@ -41,10 +38,19 @@ pub fn string_to_bytes(binary_string: String) -> Result<Vec<u8>> {
     }
 
     if bit_count > 0 {
+        current >>= 8 - bit_count;
         bytes.push(current);
     }
 
     Ok(bytes)
+}
+
+pub fn bytes_to_string(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|b| format!("{:08b}", b))
+        .collect::<Vec<String>>()
+        .join("")
 }
 
 pub fn write_bytes_to_file(filename: &str, bytes: &[u8]) -> Result<()> {

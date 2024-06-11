@@ -2,10 +2,7 @@ use crate::encoder::{END_PATTERN, START_PATTERN};
 
 use std::collections::HashMap;
 
-use anyhow::{
-    Result,
-    anyhow
-};
+use anyhow::{anyhow, Result};
 
 #[derive(Debug)]
 pub struct Decoder {
@@ -34,12 +31,12 @@ impl Decoder {
                     raw_bytes[i],
                     raw_bytes[i + 1],
                     raw_bytes[i + 2],
-                    raw_bytes[i + 3]
+                    raw_bytes[i + 3],
                 ]);
                 i += 4;
 
-                let mut encoding = Vec::new(); 
-                
+                let mut encoding = Vec::new();
+
                 let encoding_len = raw_bytes[i];
                 // Push length of encoding first
                 encoding.push(encoding_len);
@@ -82,21 +79,18 @@ impl Decoder {
         let mut i = 0;
         let mut text = String::new();
 
-        loop {
-            if let Some(encoding_len) = self.data.get(i) {
-                println!("ENC LEN: {}", encoding_len);
-                i += 1;
+        while i < self.data.len() {
+            let encoding_len = self.data[i];
+            i += 1;
 
-                if let Some(c) = lookup_table.get(&self.data[i..i + *encoding_len as usize]) {
-                    text.push(*c);
-                }
+            let encoding = &self.data[i..i + encoding_len as usize];
+            i += encoding_len as usize;
 
-                i += *encoding_len as usize;
-            } else {
-                break;
+            if let Some(&c) = lookup_table.get(encoding) {
+                text.push(c);
             }
         }
-        
+
         Ok(text)
     }
 }

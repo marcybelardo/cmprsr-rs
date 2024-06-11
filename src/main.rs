@@ -1,19 +1,13 @@
-use std::process::exit;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use std::process::exit;
 
 use cmprsr_rs::{
     build_huffman_tree,
     decoder::Decoder,
     encoder::Encoder,
     generate_codes,
-    utils::{
-        read_file_to_bytes,
-        read_file_to_string,
-        string_to_bytes,
-        write_bytes_to_file,
-        write_string_to_file,
-    },
+    utils::{read_file_to_bytes, read_file_to_string, write_bytes_to_file, write_string_to_file},
 };
 
 #[derive(Parser, Debug)]
@@ -41,7 +35,7 @@ enum Mode {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    
+
     if cli.file.as_deref().is_none() {
         eprintln!("Please provide a file");
         exit(1);
@@ -56,7 +50,7 @@ fn main() -> Result<()> {
 
             let filename = cli.file.as_deref().expect("Could not find the file");
             let text = read_file_to_string(filename).expect("Could not read to string");
-            
+
             let mut encoder = Encoder::new(text);
             encoder.count_chars();
 
@@ -64,17 +58,15 @@ fn main() -> Result<()> {
                 generate_codes(*root, &mut encoder.lookup_table, String::new())?;
             }
 
-            let encoded = encoder.encode()?;
-
             let mut bin_data = Vec::new();
             let header_data = encoder.write_header_data();
-            let encoded_data = string_to_bytes(encoded)?;
+            let encoded_data = encoder.encode()?;
 
             bin_data.extend(header_data);
             bin_data.extend(encoded_data);
 
             write_bytes_to_file(&out_file, &bin_data)?;
-        },
+        }
         Mode::Decode => {
             let out_file = match cli.out.as_deref() {
                 Some(file) => format!("{}.txt", file),
@@ -90,10 +82,9 @@ fn main() -> Result<()> {
             let lookup_table = decoder.header_to_lookup_table();
             let decoded = decoder.decode(lookup_table)?;
 
-            write_string_to_file(&out_file, &decoded)?; 
-        },
+            write_string_to_file(&out_file, &decoded)?;
+        }
     }
 
     Ok(())
 }
-

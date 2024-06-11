@@ -1,12 +1,8 @@
-pub mod utils;
-pub mod encoder;
 pub mod decoder;
+pub mod encoder;
+pub mod utils;
 
-use std::collections::{
-    BinaryHeap,
-    BTreeMap,
-    HashMap,
-};
+use std::collections::{BTreeMap, BinaryHeap, HashMap};
 
 use anyhow::Result;
 use utils::string_to_bytes;
@@ -83,12 +79,20 @@ pub fn build_huffman_tree(char_map: &mut BTreeMap<char, u32>) -> Option<Box<Huff
     }
 }
 
-pub fn generate_codes(node: HuffNode, lookup_table: &mut HashMap<Vec<u8>, char>, code: String) -> Result<()> {
+pub fn generate_codes(
+    node: HuffNode,
+    lookup_table: &mut HashMap<char, Vec<u8>>,
+    code: String,
+) -> Result<()> {
     if let Some(c) = node.character {
         // Encoding carries the length of the encoding and the code itself
-        let bit_string_len = stringify!(code.chars().count().to_le_bytes());
-        let bit_string = stringify!(code);
-        lookup_table.insert(string_to_bytes(bit_string_len.to_owned() + bit_string)?, c);
+        let encoding_len = code.chars().count() as u8;
+        let bit_string = string_to_bytes(code)?;
+
+        let mut encoded_data = vec![encoding_len];
+        encoded_data.extend(bit_string);
+
+        lookup_table.insert(c, encoded_data);
     } else {
         if let Some(l) = node.left {
             generate_codes(*l, lookup_table, code.clone() + "0")?;
@@ -100,5 +104,3 @@ pub fn generate_codes(node: HuffNode, lookup_table: &mut HashMap<Vec<u8>, char>,
 
     Ok(())
 }
-
-
