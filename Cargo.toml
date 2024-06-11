@@ -2,5 +2,9 @@
 name = "cmprsr-rs"
 version = "0.1.0"
 edition = "2021"
+authors = ["Marcy <marcy@marcelinesystems.dev"]
+description = "Huffman Compression for Text Files"
 
 [dependencies]
+clap = { version = "4.5.4", features = [ "derive" ] }
+anyhow = "1.0"
