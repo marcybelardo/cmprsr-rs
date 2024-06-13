@@ -1,5 +1,8 @@
-use std::collections::{BTreeMap, BinaryHeap};
+use std::collections::{BTreeMap, BinaryHeap, HashMap};
 
+use anyhow::Result;
+
+/// Nodes for the Huffman Tree
 #[derive(Debug)]
 pub struct HuffNode {
     pub character: Option<char>,
@@ -78,4 +81,23 @@ impl HuffTree {
             None
         }
     }
+}
+
+pub fn generate_base_codes(
+    node: HuffNode,
+    base_codes: &mut HashMap<char, String>,
+    code: String,
+) -> Result<()> {
+    if let Some(c) = node.character {
+        base_codes.insert(c, code);
+    } else {
+        if let Some(l) = node.left {
+            generate_base_codes(*l, base_codes, code.clone() + "0")?;
+        }
+        if let Some(r) = node.right {
+            generate_base_codes(*r, base_codes, code.clone() + "1")?;
+        }
+    }
+
+    Ok(())
 }
