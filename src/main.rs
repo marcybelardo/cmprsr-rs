@@ -3,10 +3,10 @@ use clap::{Parser, Subcommand};
 use std::process::exit;
 
 use cmprsr_rs::{
-    build_huffman_tree,
     decoder::Decoder,
     encoder::Encoder,
     generate_codes,
+    huffman::HuffTree,
     utils::{read_file_to_bytes, read_file_to_string, write_bytes_to_file, write_string_to_file},
 };
 
@@ -54,8 +54,8 @@ fn main() -> Result<()> {
             let mut encoder = Encoder::new(text);
             encoder.count_chars();
 
-            if let Some(root) = build_huffman_tree(&mut encoder.char_map) {
-                generate_codes(*root, &mut encoder.lookup_table, String::new())?;
+            if let Some(tree) = HuffTree::build_huffman_tree(&mut encoder.char_map) {
+                generate_codes(*tree.root, &mut encoder.lookup_table, String::new())?;
             }
 
             let mut bin_data = Vec::new();
