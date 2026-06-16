@@ -2,7 +2,7 @@ use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
 /// Maximum allowed Huffman code length in bits.
-const MAX_CODE_LENGTH: u8 = 32;
+pub const MAX_CODE_LENGTH: u8 = 32;
 
 /// Result of canonical code construction for all 256 byte values.
 pub struct CodeTable {

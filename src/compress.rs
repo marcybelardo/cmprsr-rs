@@ -1,5 +1,5 @@
-use std::fs::File;
-use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::fs::{File, OpenOptions};
+use std::io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use crate::bitio::BitWriter;
@@ -9,69 +9,89 @@ use crate::huffman;
 
 /// Compresses `input_path` and writes the `.cmpr` output to `output_path`.
 ///
-/// The compression pipeline is:
-///   1. Count byte frequencies (single pass over the input).
-///   2. Build canonical Huffman codes.
-///   3. Write the file header (with a placeholder padding byte).
-///   4. Encode the original bytes as a canonical bitstream.
-///   5. Flush the bit writer and seek back to fill in the actual padding.
-///
-/// If `output_path` already exists, it is overwritten and a warning is
-/// printed to stderr.
-pub fn compress(input_path: &Path, output_path: &Path) -> std::io::Result<()> {
-    // ------------------------------------------------------------------
-    // 1. Frequency analysis
-    // ------------------------------------------------------------------
-    let original_size = input_path.metadata()?.len();
-    let input_file = File::open(input_path)?;
-    let freqs = frequency::count_frequencies(input_file)?;
+/// Returns `(original_size, compressed_file_size)` on success for statistics.
+pub fn compress(input_path: &Path, output_path: &Path) -> std::io::Result<(u64, u64)> {
+    let (original_size, symbol_table, table) = build_codes(input_path)?;
 
-    // ------------------------------------------------------------------
-    // 2. Build canonical Huffman codes
-    // ------------------------------------------------------------------
-    let table = huffman::build_codes(&freqs).map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-    })?;
-
-    // ------------------------------------------------------------------
-    // 3. Build symbol table (sorted by byte value)
-    // ------------------------------------------------------------------
-    let symbol_table: Vec<(u8, u8)> = (0..=255u16)
-        .filter(|&b| table.code_len[b as usize] > 0)
-        .map(|b| (b as u8, table.code_len[b as usize]))
-        .collect();
-
-    // ------------------------------------------------------------------
-    // 4. Warn if overwriting an existing file
-    // ------------------------------------------------------------------
-    if output_path.exists() {
-        eprintln!(
-            "Warning: overwriting existing file `{}`",
-            output_path.display()
-        );
-    }
-
-    // ------------------------------------------------------------------
-    // 5. Write header (placeholder padding = 0)
-    // ------------------------------------------------------------------
-    let output_file = File::create(output_path)?;
+    let output_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(output_path)?;
     let mut writer = BufWriter::new(output_file);
     format::write_header(&mut writer, original_size, &symbol_table, 0)?;
     writer.flush()?;
 
-    // Obtain the raw `File` so we can seek back to update the padding
-    // byte after the bitstream is complete.
     let mut file = writer.into_inner()?;
+    encode_and_finalize(&mut file, &mut File::open(input_path)?, &table)?;
 
-    // ------------------------------------------------------------------
-    // 6. Encode input bytes as canonical bitstream
-    // ------------------------------------------------------------------
-    let input_file = File::open(input_path)?;
-    let mut reader = BufReader::new(input_file);
+    let compressed_size = file.metadata()?.len();
+    Ok((original_size, compressed_size))
+}
+
+/// Compresses `input_path` and writes the `.cmpr` output to stdout.
+///
+/// Returns `(original_size, compressed_size)` on success for statistics.
+pub fn compress_to_stdout(input_path: &Path) -> std::io::Result<(u64, u64)> {
+    let (original_size, symbol_table, table) = build_codes(input_path)?;
+
+    // Buffer everything in memory since we need to seek back for padding.
+    let mut buf = Vec::new();
+    let mut cursor = Cursor::new(&mut buf);
+    format::write_header(&mut cursor, original_size, &symbol_table, 0)?;
+
+    let compressed_end = encode_and_finalize(&mut cursor, &mut File::open(input_path)?, &table)?;
+
+    let compressed_size = compressed_end;
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    out.write_all(&buf)?;
+    out.flush()?;
+    Ok((original_size, compressed_size))
+}
+
+// ---------------------------------------------------------------------------
+// Shared internal helpers
+// ---------------------------------------------------------------------------
+
+/// Counts frequencies and builds the Huffman code table.
+fn build_codes(input_path: &Path) -> std::io::Result<(u64, Vec<(u8, u8)>, huffman::CodeTable)> {
+    let original_size = input_path.metadata()?.len();
+    let mut input_file = File::open(input_path)?;
+    let freqs = frequency::count_frequencies(&mut input_file)?;
+
+    let table = huffman::build_codes(&freqs).map_err(|e| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+    })?;
+
+    let mut symbol_table: Vec<(u8, u8)> =
+        Vec::with_capacity(table.symbol_count as usize);
+    for b in 0..=255u16 {
+        let len = table.code_len[b as usize];
+        if len > 0 {
+            symbol_table.push((b as u8, len));
+        }
+    }
+
+    Ok((original_size, symbol_table, table))
+}
+
+/// Encodes input data through the bit writer, flushes, writes the real padding
+/// byte, and appends the CRC-32 trailer.  `file` must support seeking (regular
+/// File or Cursor).
+fn encode_and_finalize<W: Write + Read + Seek>(
+    file: &mut W,
+    input: &mut File,
+    table: &huffman::CodeTable,
+) -> std::io::Result<u64> {
+    // Encode bitstream
+    input.seek(SeekFrom::Start(0))?;
+    let mut reader = BufReader::new(input);
     let mut buf = [0u8; 8192];
 
     let padding = {
-        let mut bit_writer = BitWriter::new(&mut file);
+        let mut bit_writer = BitWriter::new(&mut *file);
 
         loop {
             let n = reader.read(&mut buf)?;
@@ -86,20 +106,37 @@ pub fn compress(input_path: &Path, output_path: &Path) -> std::io::Result<()> {
             }
         }
 
-        // Flush the bit writer and capture the padding count before
-        // the borrow of `file` is released.
         bit_writer.flush()?
     };
 
-    // ------------------------------------------------------------------
-    // 7. Seek back and write the actual padding byte
-    // ------------------------------------------------------------------
-    file.seek(SeekFrom::Start(format::PADDING_OFFSET))?;
+    // Record compressed data end offset
+    let compressed_end = file.stream_position()?;
+
+    // Seek back and write the actual padding byte (the header placeholder
+    // was 0).  We need the file position for this, which is header-local.
+    let symbol_count = table.symbol_count;
+    let header_size = format::FIXED_HEADER_SIZE as u64 + symbol_count as u64 * 2;
+    let padding_offset = format::PADDING_OFFSET;
+    file.seek(SeekFrom::Start(padding_offset))?;
     file.write_all(&[padding])?;
+
+    // Compute and append CRC-32 over the compressed data bytes
+    file.seek(SeekFrom::Start(header_size))?;
+    let compressed_len = (compressed_end - header_size) as usize;
+    let mut compressed_data = vec![0u8; compressed_len];
+    file.read_exact(&mut compressed_data)?;
+
+    let crc = format::crc32(&compressed_data);
+    file.seek(SeekFrom::Start(compressed_end))?;
+    file.write_all(&crc.to_le_bytes())?;
     file.flush()?;
 
-    Ok(())
+    Ok(compressed_end + format::CRC_SIZE)
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

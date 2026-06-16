@@ -8,7 +8,10 @@ use std::io::{Read, Write};
 pub const MAGIC: [u8; 4] = [0x43, 0x4D, 0x50, 0x52];
 
 /// Current file format version.
-pub const VERSION: u8 = 0x01;
+pub const VERSION: u8 = 0x02;
+
+/// Size of the CRC-32 trailer in bytes.
+pub const CRC_SIZE: u64 = 4;
 
 /// Offset of the padding byte in the header.
 #[allow(dead_code)]
@@ -19,12 +22,48 @@ pub const PADDING_OFFSET: u64 = 13;
 pub const FIXED_HEADER_SIZE: u64 = 16;
 
 // ---------------------------------------------------------------------------
+// CRC-32 (Ethernet / ISO-HDLC, polynomial 0xEDB88320)
+// ---------------------------------------------------------------------------
+
+/// Precomputed CRC-32 lookup table (256 entries).
+const CRC32_TABLE: [u32; 256] = {
+    let mut table = [0u32; 256];
+    let mut i = 0;
+    while i < 256 {
+        let mut crc = i as u32;
+        let mut j = 0;
+        while j < 8 {
+            if crc & 1 != 0 {
+                crc = (crc >> 1) ^ 0xEDB88320;
+            } else {
+                crc >>= 1;
+            }
+            j += 1;
+        }
+        table[i] = crc;
+        i += 1;
+    }
+    table
+};
+
+/// Computes the CRC-32 checksum over `data`.
+pub fn crc32(data: &[u8]) -> u32 {
+    let mut crc = !0u32;
+    for &byte in data {
+        crc = CRC32_TABLE[((crc as u8) ^ byte) as usize] ^ (crc >> 8);
+    }
+    !crc
+}
+
+// ---------------------------------------------------------------------------
 // Header type
 // ---------------------------------------------------------------------------
 
 /// Parsed `.cmpr` file header.
 #[derive(Debug, PartialEq)]
 pub struct Header {
+    /// Format version (0x01 or 0x02).
+    pub version: u8,
     /// Original uncompressed file size in bytes.
     pub original_size: u64,
     /// Number of padding bits (0..7) in the final byte of the bitstream.
@@ -88,10 +127,11 @@ pub fn read_header<R: Read>(reader: &mut R) -> std::io::Result<Header> {
     // --- Version ---
     let mut version = [0u8; 1];
     reader.read_exact(&mut version)?;
-    if version[0] != VERSION {
+    let version = version[0];
+    if version != 0x01 && version != 0x02 {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("Unsupported format version {}", version[0]),
+            format!("Unsupported format version {}", version),
         ));
     }
 
@@ -127,10 +167,26 @@ pub fn read_header<R: Read>(reader: &mut R) -> std::io::Result<Header> {
     for _ in 0..symbol_count {
         let mut entry = [0u8; 2];
         reader.read_exact(&mut entry)?;
-        symbol_table.push((entry[0], entry[1]));
+        let (byte, code_len) = (entry[0], entry[1]);
+        if code_len == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Byte 0x{byte:02X} has zero-length code"),
+            ));
+        }
+        if code_len > 32 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "Byte 0x{byte:02X} code length {code_len} exceeds maximum of 32"
+                ),
+            ));
+        }
+        symbol_table.push((byte, code_len));
     }
 
     Ok(Header {
+        version,
         original_size,
         padding,
         symbol_count,
@@ -159,6 +215,7 @@ mod tests {
     fn round_trip_small_table() {
         let table = vec![(0x41, 3), (0x42, 3), (0x43, 2)];
         let h = round_trip(table.clone(), 1000, 3);
+        assert_eq!(h.version, 0x02);
         assert_eq!(h.original_size, 1000);
         assert_eq!(h.padding, 3);
         assert_eq!(h.symbol_count, 3);
@@ -169,6 +226,7 @@ mod tests {
     fn round_trip_all_256() {
         let table: Vec<(u8, u8)> = (0..=255).map(|b| (b, 8)).collect();
         let h = round_trip(table.clone(), 1_000_000, 0);
+        assert_eq!(h.version, 0x02);
         assert_eq!(h.original_size, 1_000_000);
         assert_eq!(h.padding, 0);
         assert_eq!(h.symbol_count, 256);
@@ -236,5 +294,48 @@ mod tests {
         // Symbol table: 2 entries * 2 bytes = 4 bytes
         // Total: 20 bytes
         assert_eq!(buf.len(), 20);
+    }
+
+    #[test]
+    fn reject_zero_length_code() {
+        let mut buf = MAGIC.to_vec();
+        buf.push(VERSION);
+        buf.extend(&0u64.to_le_bytes()); // size
+        buf.push(0); // padding
+        buf.extend(&1u16.to_le_bytes()); // symbol_count = 1
+        buf.extend(&[0x41, 0]); // symbol 'A' with code_len = 0 (invalid)
+        let mut cursor = Cursor::new(buf);
+        let err = read_header(&mut cursor).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("zero-length"));
+    }
+
+    #[test]
+    fn reject_code_len_too_long() {
+        let mut buf = MAGIC.to_vec();
+        buf.push(VERSION);
+        buf.extend(&0u64.to_le_bytes()); // size
+        buf.push(0); // padding
+        buf.extend(&1u16.to_le_bytes()); // symbol_count = 1
+        buf.extend(&[0x41, 33]); // symbol 'A' with code_len = 33 (invalid)
+        let mut cursor = Cursor::new(buf);
+        let err = read_header(&mut cursor).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("exceeds maximum"));
+    }
+
+    #[test]
+    fn crc32_known_values() {
+        // Known CRC-32 (ISO-HDLC) values from https://crccalc.com
+        assert_eq!(crc32(b""), 0x0000_0000);
+        assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
+        assert_eq!(crc32(b"hello"), 0x3610_A686);
+    }
+
+    #[test]
+    fn crc32_different_inputs_different() {
+        let a = crc32(b"the quick brown fox");
+        let b = crc32(b"the quick brown foy");
+        assert_ne!(a, b);
     }
 }

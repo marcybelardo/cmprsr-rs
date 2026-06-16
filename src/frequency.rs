@@ -4,7 +4,7 @@ use std::io::{BufReader, Read};
 ///
 /// Reads the input in buffered chunks and returns a 256-element array
 /// where `result[b]` is the number of times byte value `b` appeared.
-pub fn count_frequencies<R: Read>(reader: R) -> std::io::Result<[u64; 256]> {
+pub fn count_frequencies(reader: &mut dyn Read) -> std::io::Result<[u64; 256]> {
     let mut freqs = [0u64; 256];
     let mut reader = BufReader::new(reader);
     let mut buf = [0u8; 4096];
@@ -28,14 +28,15 @@ mod tests {
 
     #[test]
     fn empty_input() {
-        let freqs = count_frequencies(std::io::empty()).unwrap();
+        let mut empty = std::io::empty();
+        let freqs = count_frequencies(&mut empty).unwrap();
         assert!(freqs.iter().all(|&count| count == 0));
     }
 
     #[test]
     fn single_byte_repeated() {
         let data = vec![0xAB; 100];
-        let freqs = count_frequencies(&data[..]).unwrap();
+        let freqs = count_frequencies(&mut &data[..]).unwrap();
         assert_eq!(freqs[0xAB], 100);
         // All other bins should be zero.
         for b in 0..=255u16 {
@@ -48,7 +49,7 @@ mod tests {
     #[test]
     fn all_bytes_once() {
         let data: Vec<u8> = (0..=255).collect();
-        let freqs = count_frequencies(&data[..]).unwrap();
+        let freqs = count_frequencies(&mut &data[..]).unwrap();
         for b in 0..=255usize {
             assert_eq!(freqs[b], 1);
         }
@@ -61,7 +62,7 @@ mod tests {
         data.extend(std::iter::repeat(0x00).take(200));
         data.extend(std::iter::repeat(0x01).take(150));
         data.extend(std::iter::repeat(0x02).take(100));
-        let freqs = count_frequencies(&data[..]).unwrap();
+        let freqs = count_frequencies(&mut &data[..]).unwrap();
         assert_eq!(freqs[0x00], 200);
         assert_eq!(freqs[0x01], 150);
         assert_eq!(freqs[0x02], 100);
