@@ -1,2 +1,13 @@
-/target
-/data
+debug
+target
+data
+
+**/*.rs.bk
+
+*.pdb
+
+**/mutants.out*/
+
+rustc-ice-*.txt
+
+.DS_Store
